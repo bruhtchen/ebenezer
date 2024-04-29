@@ -21,7 +21,8 @@ Once you put in some incomes and expenses, you can get your current balance, you
 
 ## TODO
 
-[ ] **Config file** : set path to database.
-[ ] **Config file** : set currency sign.
 [ ] **Rollover** : copy all the fixed and estimated expenses for the new period.
+
 [ ] **Code** : use Clap for a better CLI experience. 
+
+[ ] **List** : list subitems of expenses to track individual payments.

@@ -1,10 +1,26 @@
 use std::env;
 use std::fmt;
+use config::Config;
 use rusqlite::{Connection, Result};
+
+#[macro_use]
+extern crate lazy_static;
+
+// ------------------------------------------------------------
+// CONFIG
+// ------------------------------------------------------------
+lazy_static!{
+    pub static ref CONFIG: Config = Config::builder()
+        .add_source(config::File::with_name("Settings.toml"))
+        .add_source(config::Environment::with_prefix("EBENEZER").separator("_"))
+        .build()
+        .unwrap();
+}
 
 // ------------------------------------------------------------
 // STRUCTS
 // ------------------------------------------------------------
+
 #[derive(Debug)]
 struct Period {
     id: u32,
@@ -14,7 +30,7 @@ struct Period {
 
 #[derive(Debug)]
 struct Income {
-    id: u32,
+    _id: u32,
     label: String,
     value: i64, // in cents.
 }
@@ -83,6 +99,22 @@ impl fmt::Display for Expense {
 // ------------------------------------------------------------
 // CORE
 // ------------------------------------------------------------
+/// Returns the path to the SQLite DB file, either from the configuration or a reasonable default.
+fn get_dbfile() -> String {
+    return match CONFIG.get::<String>("dbfile") {
+        Ok(r) => r,
+        _ => "./ebenezer.db3".to_string()
+    }
+}
+
+/// Returns the currency symbol to use, either from the configuration or a reasonable default.
+fn get_currency() -> String {
+    return match CONFIG.get::<String>("currency") {
+        Ok(r) => r,
+        _ => "€".to_string()
+    }
+}
+
 fn main() {
     let conn = init_db().unwrap();
 
@@ -255,7 +287,7 @@ fn spend_all(conn: &Connection, expense: &Expense) -> Result<()> {
 // DATABASE
 // ------------------------------------------------------------
 fn init_db() -> Result<Connection> {
-    let conn = Connection::open("./ebenezer.db3")?;
+    let conn = Connection::open(get_dbfile())?;
 
     conn.execute(
         "create table if not exists periods (
@@ -393,7 +425,7 @@ fn get_incomes(conn: &Connection, period: u32) -> Result<Vec<Income>> {
 
     let incomes_iter = stmt.query_map([period], |row| {
         Ok(Income {
-            id: row.get(0)?,
+            _id: row.get(0)?,
             label: row.get(1)?,
             value: row.get(2)?,
         })
@@ -492,7 +524,8 @@ fn parse_into_cents(value: &str) -> i64 {
 }
 
 fn print_in_currency(amount: i64) -> String {
+    let currency = get_currency();
     let cents = amount % 100;
     let money = amount / 100;
-    return format!("{},{:02}€", money, cents);
+    return format!("{},{:02}{}", money, cents, currency);
 }
