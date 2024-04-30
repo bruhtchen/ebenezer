@@ -45,6 +45,16 @@ struct Expense {
 }
 
 #[derive(Debug)]
+struct Log {
+    id: u32,
+    timer: NaiveDateTime,
+    action: String,
+    arg1: Option<String>,
+    arg2: Option<String>,
+    arg3: Option<String>
+}
+
+#[derive(Debug)]
 enum ExpenseType {
     FIXED,
     ESTIMATED,
@@ -95,6 +105,28 @@ impl fmt::Display for Expense {
             print_in_currency(self.estimate)
     )}
 }
+
+impl fmt::Display for Log {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let bare = get_action_label(self.action);
+        let mut res = bare.clone();
+
+        if bare.contains("%1") {
+            res = res.replace("%1", self.arg1.unwrap());
+        }
+        
+        if bare.contains("%2") {
+            res = res.replace("%2", self.arg2.unwrap());
+        }
+        
+        if bare.contains("%3") {
+            res = res.replace("%3", self.arg3.unwrap());
+        }
+
+        write!(f, "{} - {} : {}", self.id.to_string(), self.timer..format("%Y-%m-%d %H:%M:%S").to_string(), res);
+    }
+}
+
 
 // ------------------------------------------------------------
 // CORE
@@ -209,6 +241,13 @@ fn main() {
     }
 }
 
+/// Print the logbook.
+fn list_logs(logs: &Vec<Log>) {
+    for line in logs {
+        print!("{}", line)
+    }
+}
+
 /// Print a detailed account.
 fn list(incomes: &Vec<Income>, expenses: &Vec<Expense>) {
     print_list("INCOME", &incomes);
@@ -319,8 +358,60 @@ fn init_db() -> Result<Connection> {
         )",
         (),
     )?;
+    
+    conn.execute(
+        "create table if not exists logs (
+            id integer primary key AUTOINCREMENT,
+            timer timestamp not null,
+            action text not null,
+            arg1 text,
+            arg2 text,
+            arg3 text
+        )",
+        (),
+    )?;
 
     Ok(conn)
+}
+
+/// Create a new line of log
+fn create_log_no_params(conn: &Connection, action: &str) -> Result<()> {    
+    conn.execute(
+        "INSERT INTO logs (timer, action) values (CURRENT_TIMESTAMP, ?1)",
+        (action),
+    )?;
+
+    Ok(())
+}
+
+/// Create a new line of log with one variable parameter
+fn create_log_one_param(conn: &Connection, action: &str, param1: &str) -> Result<()> {    
+    conn.execute(
+        "INSERT INTO logs (timer, action, arg1) values (CURRENT_TIMESTAMP, ?1, ?2)",
+        (action, param1),
+    )?;
+
+    Ok(())
+}
+
+/// Create a new line of log with two variable parameters
+fn create_log_two_params(conn: &Connection, action: &str, param1: &str, param2: &str) -> Result<()> {    
+    conn.execute(
+        "INSERT INTO logs (timer, action, arg1, arg2) values (CURRENT_TIMESTAMP, ?1, ?2, ?3)",
+        (action, param1, param2),
+    )?;
+
+    Ok(())
+}
+
+/// Create a new line of log with three variable parameters
+fn create_log_three_params(conn: &Connection, action: &str, param1: &str, param2: &str, param3: &str) -> Result<()> {    
+    conn.execute(
+        "INSERT INTO logs (timer, action, arg1, arg2, arg3) values (CURRENT_TIMESTAMP, ?1, ?2, ?3, ?4)",
+        (action, param1, param2, param3),
+    )?;
+
+    Ok(())
 }
 
 /// Create a new income
@@ -330,6 +421,7 @@ fn create_income(conn: &Connection, period: u32, label: &str, value: i64) -> Res
         (period, label, value),
     )?;
 
+    create_log_two_params("ADD_INCOME", label, print_in_currency(value));
     println!("Saved : New income line {} !", label);
     Ok(())
 }
@@ -341,7 +433,7 @@ fn create_expense(conn: &Connection, period: u32, label: &str, expense_type: Exp
         (period, label, expense_type.to_string(), estimate, spent),
     )?;
 
-    println!("Saved : New expense line {} !", label);
+    create_log_three_params("ADD_EXPENSE", label, print_in_currency(estimate), print_in_currency(spent));
     Ok(())
 }
 
@@ -352,7 +444,7 @@ fn override_estimate(conn: &Connection, expense: &Expense, new_estimate: i64) ->
         (new_estimate, expense.id),
     )?;
 
-    println!("Saved : Updated expense line {} !", expense.label);
+    create_log_two_params("UPDATE_ESTIMATE", expense.label, print_in_currency(new_estimate));
     Ok(())
 }
 
@@ -363,7 +455,7 @@ fn remove_expense(conn: &Connection, expense: &Expense) -> Result<()> {
         [expense.id],
     )?;
 
-    println!("Removed expense line {} !", expense.label);
+    create_log_one_param("REMOVE_EXPENSE", expense.label);
     Ok(())
 }
 
@@ -389,6 +481,7 @@ fn end_period(conn: &Connection, id: u32) -> Result<()> {
         [id],
     )?;
 
+    create_log_one_param("END_PERIOD", id.to_string());
     Ok(())
 }
 
@@ -399,6 +492,7 @@ fn create_period(conn: &Connection) -> Result<()> {
         (),
     )?;
 
+    create_log_one_param("START_PERIOD", conn.last_insert_rowid().to_string());
     Ok(())
 }
 
@@ -481,7 +575,7 @@ fn increment_spending(conn: &Connection, expense: &Expense, amount: i64) -> Resu
         (amount, expense.id),
     )?;
 
-    println!("Saved : {} spent on {} !", print_in_currency(amount), expense.label);
+    create_log_two_params("SPEND", expense.label, print_in_currency(amount));
     Ok(())
 }
 
@@ -492,9 +586,53 @@ fn override_spending(conn: &Connection, expense: &Expense, new_amount: i64) -> R
         (new_amount, expense.id),
     )?;
 
-    println!("Override : {} spent on {} !", print_in_currency(new_amount), expense.label);
+    create_log_two_params("OVERRIDE_SPENDING", expense.label, print_in_currency(new_amount));
     Ok(())
 }
+
+// ------------------------------------------------------------
+// LOGS
+// ------------------------------------------------------------
+
+fn get_action_label(log: &Log) -> String {
+    return match log.action {
+        "START_PERIOD" => "Started a new period. (#%1)",
+        "END_PERIOD" => "Ended period #%1.",
+        "ADD_INCOME" => "Added income of %2 : %1.",
+        "ADD_EXPENSE" => "Added expense : %1 : estimated %2, spent %3.",
+        "UPDATE_ESTIMATE" => "Updated expense %1 : new estimate of %2.",
+        "REMOVE_EXPENSE" => "Removed expense %1.",
+        "SPEND" => "Spent %2 on %1.",
+        "OVERRIDE_SPENDING" => "Set spending of %2 on %1.",
+        _ => ""
+    }
+}
+
+fn get_logs(conn: &Connection) -> Result<Vec<Log>> {
+    let mut stmt = conn.prepare(
+        "SELECT l.id, l.timer, l.action, l.arg1, l.arg2, l.arg3 FROM logs ORDER BY id desc "
+    )?;
+
+    let log_iter = stmt.query_map([], |row| {
+        Ok(Log {
+            id: row.get(0)?,
+            timer: row.get(1)?,
+            action: row.get(2)?, 
+            arg1: row.get(3)?,
+            arg2: row.get(4)?,
+            arg3: row.get(5)?,
+        })
+    })?;
+
+    let mut logs: Vec<Log> = Vec::new();
+
+    for logline in log_iter {
+        logs.push(logline.unwrap());
+    }
+
+    return Ok(logs);
+}
+
 
 // ------------------------------------------------------------
 // UTILS
