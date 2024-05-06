@@ -2,6 +2,7 @@ use std::env;
 use std::fmt;
 use config::Config;
 use rusqlite::{Connection, Result};
+use chrono::{NaiveDateTime};
 
 #[macro_use]
 extern crate lazy_static;
@@ -108,22 +109,21 @@ impl fmt::Display for Expense {
 
 impl fmt::Display for Log {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let bare = get_action_label(self.action);
-        let mut res = bare.clone();
+        let bare = get_action_label(&self);
 
-        if bare.contains("%1") {
-            res = res.replace("%1", self.arg1.unwrap());
-        }
-        
-        if bare.contains("%2") {
-            res = res.replace("%2", self.arg2.unwrap());
-        }
-        
-        if bare.contains("%3") {
-            res = res.replace("%3", self.arg3.unwrap());
-        }
+        let arg1 = &(self.arg1.to_owned().unwrap_or("".to_string()));
+        let arg2 = &(self.arg2.to_owned().unwrap_or("".to_string()));
+        let arg3 = &(self.arg3.to_owned().unwrap_or("".to_string()));
 
-        write!(f, "{} - {} : {}", self.id.to_string(), self.timer..format("%Y-%m-%d %H:%M:%S").to_string(), res);
+        let res = bare
+            .replace("%1", &arg1)
+            .replace("%2", &arg2)
+            .replace("%3", &arg3);
+
+        write!(f, "{} - {} : {}", 
+            self.id.to_string(), 
+            self.timer.format("%Y-%m-%d %H:%M:%S").to_string(), 
+            res)
     }
 }
 
@@ -168,6 +168,14 @@ fn main() {
 
             match action.as_str() {
                 "--list" => list(&incomes, &expenses),
+                "--logs" => {
+                    let logs = get_current_logs(&conn);
+                    list_logs(&logs.expect("Error : cannot get logs !"));
+                }
+                "--logs-all" => {
+                    let logs = get_all_logs(&conn);
+                    list_logs(&logs.expect("Error : cannot get logs !"));
+                }
                 "--roll" => {
                     end_period(&conn, period).expect("Error : cannot set an end date for the current period !");
                     create_period(&conn).expect("Error : cannot initialize a new period !");
@@ -244,7 +252,7 @@ fn main() {
 /// Print the logbook.
 fn list_logs(logs: &Vec<Log>) {
     for line in logs {
-        print!("{}", line)
+        println!("{}", line)
     }
 }
 
@@ -362,6 +370,7 @@ fn init_db() -> Result<Connection> {
     conn.execute(
         "create table if not exists logs (
             id integer primary key AUTOINCREMENT,
+            period_id integer not null,
             timer timestamp not null,
             action text not null,
             arg1 text,
@@ -374,21 +383,13 @@ fn init_db() -> Result<Connection> {
     Ok(conn)
 }
 
-/// Create a new line of log
-fn create_log_no_params(conn: &Connection, action: &str) -> Result<()> {    
-    conn.execute(
-        "INSERT INTO logs (timer, action) values (CURRENT_TIMESTAMP, ?1)",
-        (action),
-    )?;
-
-    Ok(())
-}
-
 /// Create a new line of log with one variable parameter
 fn create_log_one_param(conn: &Connection, action: &str, param1: &str) -> Result<()> {    
+    let period_id = get_current_period(&conn).expect("Unable to find period !");
+
     conn.execute(
-        "INSERT INTO logs (timer, action, arg1) values (CURRENT_TIMESTAMP, ?1, ?2)",
-        (action, param1),
+        "INSERT INTO logs (period_id, timer, action, arg1) values (?1, CURRENT_TIMESTAMP, ?2, ?3)",
+        (period_id, action, param1),
     )?;
 
     Ok(())
@@ -396,9 +397,11 @@ fn create_log_one_param(conn: &Connection, action: &str, param1: &str) -> Result
 
 /// Create a new line of log with two variable parameters
 fn create_log_two_params(conn: &Connection, action: &str, param1: &str, param2: &str) -> Result<()> {    
+    let period_id = get_current_period(&conn).expect("Unable to find period !");
+
     conn.execute(
-        "INSERT INTO logs (timer, action, arg1, arg2) values (CURRENT_TIMESTAMP, ?1, ?2, ?3)",
-        (action, param1, param2),
+        "INSERT INTO logs (period_id, timer, action, arg1, arg2) values (?1, CURRENT_TIMESTAMP, ?2, ?3, ?4)",
+        (period_id, action, param1, param2),
     )?;
 
     Ok(())
@@ -406,9 +409,11 @@ fn create_log_two_params(conn: &Connection, action: &str, param1: &str, param2: 
 
 /// Create a new line of log with three variable parameters
 fn create_log_three_params(conn: &Connection, action: &str, param1: &str, param2: &str, param3: &str) -> Result<()> {    
+    let period_id = get_current_period(&conn).expect("Unable to find period !");
+
     conn.execute(
-        "INSERT INTO logs (timer, action, arg1, arg2, arg3) values (CURRENT_TIMESTAMP, ?1, ?2, ?3, ?4)",
-        (action, param1, param2, param3),
+        "INSERT INTO logs (period_id, timer, action, arg1, arg2, arg3) values (?1, CURRENT_TIMESTAMP, ?2, ?3, ?4, ?5)",
+        (period_id, action, param1, param2, param3),
     )?;
 
     Ok(())
@@ -421,7 +426,9 @@ fn create_income(conn: &Connection, period: u32, label: &str, value: i64) -> Res
         (period, label, value),
     )?;
 
-    create_log_two_params("ADD_INCOME", label, print_in_currency(value));
+    create_log_two_params(&conn, "ADD_INCOME", label, &print_in_currency(value))
+        .expect("Unable to create ADD_INCOME log : ");
+        
     println!("Saved : New income line {} !", label);
     Ok(())
 }
@@ -433,7 +440,8 @@ fn create_expense(conn: &Connection, period: u32, label: &str, expense_type: Exp
         (period, label, expense_type.to_string(), estimate, spent),
     )?;
 
-    create_log_three_params("ADD_EXPENSE", label, print_in_currency(estimate), print_in_currency(spent));
+    create_log_three_params(&conn, "ADD_EXPENSE", &label, &print_in_currency(estimate), &print_in_currency(spent))
+        .expect("Unable to create ADD_EXPENSE log : ");
     Ok(())
 }
 
@@ -444,7 +452,8 @@ fn override_estimate(conn: &Connection, expense: &Expense, new_estimate: i64) ->
         (new_estimate, expense.id),
     )?;
 
-    create_log_two_params("UPDATE_ESTIMATE", expense.label, print_in_currency(new_estimate));
+    create_log_two_params(&conn, "UPDATE_ESTIMATE", &expense.label, &print_in_currency(new_estimate))
+        .expect("Unable to create UPDATE_ESTIMATE log : ");
     Ok(())
 }
 
@@ -455,7 +464,8 @@ fn remove_expense(conn: &Connection, expense: &Expense) -> Result<()> {
         [expense.id],
     )?;
 
-    create_log_one_param("REMOVE_EXPENSE", expense.label);
+    create_log_one_param(&conn, "REMOVE_EXPENSE", &expense.label)
+        .expect("Unable to create REMOVE_EXPENSE log : ");
     Ok(())
 }
 
@@ -481,7 +491,8 @@ fn end_period(conn: &Connection, id: u32) -> Result<()> {
         [id],
     )?;
 
-    create_log_one_param("END_PERIOD", id.to_string());
+    create_log_one_param(&conn, "END_PERIOD", &id.to_string())
+        .expect("Unable to create END_PERIOD log : ");
     Ok(())
 }
 
@@ -492,7 +503,8 @@ fn create_period(conn: &Connection) -> Result<()> {
         (),
     )?;
 
-    create_log_one_param("START_PERIOD", conn.last_insert_rowid().to_string());
+    create_log_one_param(&conn, "START_PERIOD", &conn.last_insert_rowid().to_string())
+        .expect("Unable to create START_PERIOD log : ");
     Ok(())
 }
 
@@ -575,7 +587,8 @@ fn increment_spending(conn: &Connection, expense: &Expense, amount: i64) -> Resu
         (amount, expense.id),
     )?;
 
-    create_log_two_params("SPEND", expense.label, print_in_currency(amount));
+    create_log_two_params(&conn, "SPEND", &expense.label, &print_in_currency(amount))
+        .expect("Unable to create SPEND log : ");
     Ok(())
 }
 
@@ -586,7 +599,8 @@ fn override_spending(conn: &Connection, expense: &Expense, new_amount: i64) -> R
         (new_amount, expense.id),
     )?;
 
-    create_log_two_params("OVERRIDE_SPENDING", expense.label, print_in_currency(new_amount));
+    create_log_two_params(&conn, "OVERRIDE_SPENDING", &expense.label, &print_in_currency(new_amount))
+        .expect("Unable to create OVERRIDE_SPENDING log : ");
     Ok(())
 }
 
@@ -594,8 +608,8 @@ fn override_spending(conn: &Connection, expense: &Expense, new_amount: i64) -> R
 // LOGS
 // ------------------------------------------------------------
 
-fn get_action_label(log: &Log) -> String {
-    return match log.action {
+fn get_action_label(log: &Log) -> &str {
+    return match log.action.as_str() {
         "START_PERIOD" => "Started a new period. (#%1)",
         "END_PERIOD" => "Ended period #%1.",
         "ADD_INCOME" => "Added income of %2 : %1.",
@@ -608,9 +622,9 @@ fn get_action_label(log: &Log) -> String {
     }
 }
 
-fn get_logs(conn: &Connection) -> Result<Vec<Log>> {
+fn get_all_logs(conn: &Connection) -> Result<Vec<Log>> {
     let mut stmt = conn.prepare(
-        "SELECT l.id, l.timer, l.action, l.arg1, l.arg2, l.arg3 FROM logs ORDER BY id desc "
+        "SELECT l.id, l.timer, l.action, l.arg1, l.arg2, l.arg3 FROM logs l ORDER BY l.id desc "
     )?;
 
     let log_iter = stmt.query_map([], |row| {
@@ -633,6 +647,32 @@ fn get_logs(conn: &Connection) -> Result<Vec<Log>> {
     return Ok(logs);
 }
 
+fn get_current_logs(conn: &Connection) -> Result<Vec<Log>> {
+    let period_id = get_current_period(&conn).expect("Unable to find period !");
+
+    let mut stmt = conn.prepare(
+        "SELECT l.id, l.timer, l.action, l.arg1, l.arg2, l.arg3 FROM logs l WHERE l.period_id = ? ORDER BY l.id desc "
+    )?;
+
+    let log_iter = stmt.query_map([period_id], |row| {
+        Ok(Log {
+            id: row.get(0)?,
+            timer: row.get(1)?,
+            action: row.get(2)?, 
+            arg1: row.get(3)?,
+            arg2: row.get(4)?,
+            arg3: row.get(5)?,
+        })
+    })?;
+
+    let mut logs: Vec<Log> = Vec::new();
+
+    for logline in log_iter {
+        logs.push(logline.unwrap());
+    }
+
+    return Ok(logs);
+}
 
 // ------------------------------------------------------------
 // UTILS

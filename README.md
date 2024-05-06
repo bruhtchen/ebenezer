@@ -25,4 +25,3 @@ Once you put in some incomes and expenses, you can get your current balance, you
 
 [ ] **Code** : use Clap for a better CLI experience. 
 
-[ ] **List** : list subitems of expenses to track individual payments.
