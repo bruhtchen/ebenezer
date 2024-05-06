@@ -179,6 +179,7 @@ fn main() {
                 "--roll" => {
                     end_period(&conn, period).expect("Error : cannot set an end date for the current period !");
                     create_period(&conn).expect("Error : cannot initialize a new period !");
+                    copy_fixed_and_estimates(&conn).expect("Error : cannot initialize expenses for the new period !");
                 },
                 "--period" => print!("{}", get_period(&conn, period).expect("Error : cannot find infos on the current period !")),
                 _ => panic!("Unknown option !")
@@ -206,7 +207,7 @@ fn main() {
 
                     match opt_expense {
                         Some(exp) => increment_spending(&conn, &exp, spent).expect("Error : Unable to save the spending !"),
-                        None => create_expense(&conn, 1, &label, ExpenseType::UNPLANNED, spent, spent).expect("Error : Unable to create a new expense !"),
+                        None => create_expense(&conn, period, &label, ExpenseType::UNPLANNED, spent, spent).expect("Error : Unable to create a new expense !"),
                     }
                 }    
             }            
@@ -223,7 +224,7 @@ fn main() {
 
                     match opt_expense {
                         Some(exp) => override_estimate(&conn, &exp, parse_into_cents(value)).expect("Error : Unable to update an expense !"),
-                        None => create_expense(&conn, 1, &label, ExpenseType::FIXED, parse_into_cents(value), 0).expect("Error : Unable to create a new expense !"),
+                        None => create_expense(&conn, period, &label, ExpenseType::FIXED, parse_into_cents(value), 0).expect("Error : Unable to create a new expense !"),
                     }
                 },
                 "--estimate" => {
@@ -234,13 +235,13 @@ fn main() {
 
                     match opt_expense {
                         Some(exp) => override_estimate(&conn, &exp, parse_into_cents(value)).expect("Error : Unable to update an expense !"),
-                        None => create_expense(&conn, 1, &label, ExpenseType::ESTIMATED, parse_into_cents(value), 0).expect("Error : Unable to create a new expense !"),
+                        None => create_expense(&conn, period, &label, ExpenseType::ESTIMATED, parse_into_cents(value), 0).expect("Error : Unable to create a new expense !"),
                     }
                 },
                 "--income" => {
                     let value = &args[2];
                     let label = &args[3];
-                    create_income(&conn, 1, &label,  parse_into_cents(value)).expect("Error : Unable to create a new income !")
+                    create_income(&conn, period, &label,  parse_into_cents(value)).expect("Error : Unable to create a new income !")
                 },
                 _ => panic!("Unknown option !")
             }
@@ -468,6 +469,25 @@ fn remove_expense(conn: &Connection, expense: &Expense) -> Result<()> {
         .expect("Unable to create REMOVE_EXPENSE log : ");
     Ok(())
 }
+
+/// Copy fixed and estimated expense lines when we roll over to a new period.
+/// The "spent" amount is initialized at zero.
+fn copy_fixed_and_estimates(conn: &Connection) -> Result<()> {
+    let new_period_id: u32 = get_current_period(conn).expect("Unable to find a period !");
+    let old_period_id = new_period_id - 1;
+    
+    conn.execute(
+        "INSERT INTO expenses (period_id, label, type, estimate, spent)
+              SELECT period_id + 1, label, type, estimate, 0 
+              FROM expenses e2 
+              WHERE e2.period_id = ?
+              AND e2.type in ('FIXED', 'ESTIMATED') ",
+        [old_period_id],
+    )?;
+
+    Ok(())
+}
+
 
 fn get_current_period(conn: &Connection) -> Result<u32> {
     let mut stmt = conn.prepare(
