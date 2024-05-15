@@ -243,6 +243,17 @@ fn main() {
                     let label = &args[3];
                     create_income(&conn, period, &label,  parse_into_cents(value)).expect("Error : Unable to create a new income !")
                 },
+                "--rename" => {
+                    let oldlabel = &args[2];
+                    let newlabel = &args[3];
+
+                    let opt_expense = find_expense_by_label(&expenses, &oldlabel);
+
+                    match opt_expense {
+                        Some(exp) => rename_expense(&conn, &exp, newlabel).expect("Error : Unable to update an expense !"),
+                        None => panic!("Error : no expense line found"),
+                    }
+                }
                 _ => panic!("Unknown option !")
             }
         },
@@ -276,6 +287,10 @@ fn list_expenses(source: &Vec<Expense>) {
             ExpenseType::UNPLANNED => unplanned.push(expense)
         }
     }
+
+    estimated.sort_by(|a, b| b.spent.cmp(&a.spent));
+    fixed.sort_by(|a, b| b.spent.cmp(&a.spent));
+    unplanned.sort_by(|a, b| b.spent.cmp(&a.spent));
 
     print_list("FIXED MONTHLY EXPENSES", &fixed);
     print_list("VARIABLE MONTHLY EXPENSES", &estimated);
@@ -458,6 +473,18 @@ fn override_estimate(conn: &Connection, expense: &Expense, new_estimate: i64) ->
     Ok(())
 }
 
+/// Rename an expense line
+fn rename_expense(conn: &Connection, expense: &Expense, new_label: &String) -> Result<()> {
+    conn.execute(
+        "UPDATE expenses SET label = ?1 WHERE id = ?2",
+        (new_label, expense.id),
+    )?;
+
+    create_log_two_params(&conn, "RENAME_ESTIMATE", &expense.label, &new_label)
+        .expect("Unable to create RENAME_ESTIMATE log : ");
+    Ok(())
+}
+
 /// Removes an expense
 fn remove_expense(conn: &Connection, expense: &Expense) -> Result<()> {    
     conn.execute(
@@ -635,6 +662,7 @@ fn get_action_label(log: &Log) -> &str {
         "ADD_INCOME" => "Added income of %2 : %1.",
         "ADD_EXPENSE" => "Added expense : %1 : estimated %2, spent %3.",
         "UPDATE_ESTIMATE" => "Updated expense %1 : new estimate of %2.",
+        "RENAME_ESTIMATE" => "Renamed expense %1 : now labelled %2.",
         "REMOVE_EXPENSE" => "Removed expense %1.",
         "SPEND" => "Spent %2 on %1.",
         "OVERRIDE_SPENDING" => "Set spending of %2 on %1.",
