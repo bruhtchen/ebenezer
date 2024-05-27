@@ -2,7 +2,9 @@ use std::env;
 use std::fmt;
 use config::Config;
 use rusqlite::{Connection, Result};
-use chrono::{NaiveDateTime};
+use crate::structs::structs::{Log, Period, Income, Expense, ExpenseType};
+
+pub mod structs;
 
 #[macro_use]
 extern crate lazy_static;
@@ -16,50 +18,6 @@ lazy_static!{
         .add_source(config::Environment::with_prefix("EBENEZER").separator("_"))
         .build()
         .unwrap();
-}
-
-// ------------------------------------------------------------
-// STRUCTS
-// ------------------------------------------------------------
-
-#[derive(Debug)]
-struct Period {
-    id: u32,
-    start_date: String,
-    end_date: Option<String>,
-}
-
-#[derive(Debug)]
-struct Income {
-    _id: u32,
-    label: String,
-    value: i64, // in cents.
-}
-
-#[derive(Debug)]
-struct Expense {
-    id: u32,
-    label: String,
-    estimate: i64, // in cents.
-    spent: i64, // in cents.
-    expense_type: ExpenseType
-}
-
-#[derive(Debug)]
-struct Log {
-    id: u32,
-    timer: NaiveDateTime,
-    action: String,
-    arg1: Option<String>,
-    arg2: Option<String>,
-    arg3: Option<String>
-}
-
-#[derive(Debug)]
-enum ExpenseType {
-    FIXED,
-    ESTIMATED,
-    UNPLANNED
 }
 
 impl fmt::Display for Period {
@@ -189,6 +147,21 @@ fn main() {
             let action = &args[1];
 
             match action.as_str() {
+                "--list" => {
+                    let list_period: u32 = args[2].parse().expect("Error : unable to parse period id !");
+
+                    let period = get_period(&conn, list_period).expect("Unable to find period");
+                    
+                    println!("PERIOD {} : {} -> {}", 
+                        period.id, 
+                        period.start_date, 
+                        period.end_date.unwrap_or("Current".to_string()));
+
+                    let list_incomes = get_incomes(&conn, list_period).unwrap();
+                    let list_expenses = get_expenses(&conn, list_period).unwrap();
+                    list(&list_incomes, &list_expenses);
+                },
+                
                 "--remove" => {
                     let label = &args[2];
                     let expense = find_expense_by_label(&expenses, &label).expect("Error : no expense found, unable to remove it.");
