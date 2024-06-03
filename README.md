@@ -19,9 +19,26 @@ The application tracks **incomes** and **expenses** over some **period** of time
 
 Once you put in some incomes and expenses, you can get your current balance, your expected balance at end of period, and an overview of all expense categories.
 
-## TODO
+## Commands
 
-[ ] **Code** : use Clap for a better CLI experience. 
-[ ] **Code** : split nicely into modules
-[ ] **Audit** : List incomes and expenses for past periods
+Usage: ebenezer [COMMAND]
+
+Commands:
+  [empty]   Print the current balance
+  list      List incomes and expenses
+  logs      List every transaction of the current period for auditing purposes
+  logs-all  List every transaction for auditing purposes
+  roll      Switch to a new period
+  period    Display the current period
+  remove    Remove an expense line
+  spend     Spend some money on an expense line. If amount is omitted, the whole expense is spent
+  fixed     Create a new constant expense line
+  estimate  Create a new estimated expense line
+  income    Create a new constant expense line
+  rename    Change the label of an expense line
+  help      Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
 
