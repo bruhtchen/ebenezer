@@ -1,10 +1,12 @@
-use std::env;
 use std::fmt;
 use config::Config;
 use rusqlite::{Connection, Result};
-use crate::structs::structs::{Log, Period, Income, Expense, ExpenseType};
+use clap::{Parser, Subcommand};
+use crate::structs::{Log, Period, Income, Expense, ExpenseType};
+use crate::utils::{parse_into_cents, print_in_currency};
 
 pub mod structs;
+pub mod utils;
 
 #[macro_use]
 extern crate lazy_static;
@@ -20,71 +22,53 @@ lazy_static!{
         .unwrap();
 }
 
-impl fmt::Display for Period {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match& self.end_date {
-            Some(d) => {
-                write!(f, "Period {}, started on {}, ended on {}.", 
-                self.id, 
-                self.start_date,
-                d)
-            },
-            None => {
-                write!(f, "Period {}, started on {}, ongoing.", 
-                self.id, 
-                self.start_date)
-            }
-        }
-    }
+// ------------------------------------------------------------
+// CLI
+// ------------------------------------------------------------
+
+#[derive(Parser)]
+#[command(version, about, long_about = None)]
+#[command(propagate_version = true)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
 }
 
-impl fmt::Display for Income {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{} : {}", 
-            self.label, 
-            print_in_currency(self.value)
-    )}
+#[derive(Subcommand)]
+enum Commands {
+    /// List incomes and expenses
+    List { id: Option<u32> },
+
+    /// List every transaction of the current period for auditing purposes
+    Logs,
+
+    /// List every transaction for auditing purposes
+    LogsAll,
+
+    /// Switch to a new period
+    Roll,
+
+    /// Display the current period
+    Period,
+
+    /// Remove an expense line
+    Remove { label: String },
+
+    /// Spend some money on an expense line. If amount is omitted, the whole expense is spent.
+    Spend { label: String, amount: Option<String> },
+
+    /// Create a new constant expense line
+    Fixed { label: String, amount: String },
+    
+    /// Create a new estimated expense line
+    Estimate { label: String, amount: String },
+
+    /// Create a new constant expense line
+    Income { label: String, amount: String },
+    
+    /// Change the label of an expense line
+    Rename { old: String, new: String },
 }
-
-impl fmt::Display for ExpenseType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            ExpenseType::FIXED => write!(f, "FIXED"),
-            ExpenseType::ESTIMATED => write!(f, "ESTIMATED"),
-            ExpenseType::UNPLANNED => write!(f, "UNPLANNED")
-        }
-    }
-}
-
-impl fmt::Display for Expense {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{} : {} spent out of {}", 
-            self.label, 
-            print_in_currency(self.spent), 
-            print_in_currency(self.estimate)
-    )}
-}
-
-impl fmt::Display for Log {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let bare = get_action_label(&self);
-
-        let arg1 = &(self.arg1.to_owned().unwrap_or("".to_string()));
-        let arg2 = &(self.arg2.to_owned().unwrap_or("".to_string()));
-        let arg3 = &(self.arg3.to_owned().unwrap_or("".to_string()));
-
-        let res = bare
-            .replace("%1", &arg1)
-            .replace("%2", &arg2)
-            .replace("%3", &arg3);
-
-        write!(f, "{} - {} : {}", 
-            self.id.to_string(), 
-            self.timer.format("%Y-%m-%d %H:%M:%S").to_string(), 
-            res)
-    }
-}
-
 
 // ------------------------------------------------------------
 // CORE
@@ -98,7 +82,7 @@ fn get_dbfile() -> String {
 }
 
 /// Returns the currency symbol to use, either from the configuration or a reasonable default.
-fn get_currency() -> String {
+pub fn get_currency() -> String {
     return match CONFIG.get::<String>("currency") {
         Ok(r) => r,
         _ => "€".to_string()
@@ -116,121 +100,105 @@ fn main() {
         create_period(&conn).expect("Error : cannot initialize the first period !");
     }
 
-    // Act on user input
-    let args: Vec<String> = env::args().collect();
+    let cli = Cli::parse();
 
-    match args.len() {
-        1 => show_balance(&incomes, &expenses),
-        2 => {
-            let action = &args[1];
+    match &cli.command {
+        Some(cmd) => {
+            match cmd {
+                Commands::Estimate { label, amount } => {
+                    let estimate = parse_into_cents(amount);
+                    let opt_expense = find_expense_by_label(&expenses, &label);
 
-            match action.as_str() {
-                "--list" => list(&incomes, &expenses),
-                "--logs" => {
+                    match opt_expense {
+                        Some(exp) => override_estimate(&conn, &exp, estimate).expect("Error : Unable to update an expense !"),
+                        None => create_expense(&conn, period, &label, ExpenseType::ESTIMATED, estimate, 0).expect("Error : Unable to create a new expense !"),
+                    }
+                },
+
+                Commands::Fixed { label, amount } => {
+                    let estimate = parse_into_cents(amount);
+                    let opt_expense = find_expense_by_label(&expenses, &label);
+
+                    match opt_expense {
+                        Some(exp) => override_estimate(&conn, &exp, estimate).expect("Error : Unable to update an expense !"),
+                        None => create_expense(&conn, period, &label, ExpenseType::FIXED, estimate, 0).expect("Error : Unable to create a new expense !"),
+                    }
+                },
+
+                Commands::Income { label, amount } => {
+                    let cents = parse_into_cents(amount);
+                    create_income(&conn, period, &label, cents).expect("Error : Unable to create a new income !")
+                },
+
+                Commands::List { id } => {
+                    match id {
+                        Some(x) => {
+                            let period = get_period(&conn, *x).expect("Unable to find period");
+                            
+                            println!("PERIOD {} : {} -> {}", 
+                                period.id, 
+                                period.start_date, 
+                                period.end_date.unwrap_or("Current".to_string()));
+        
+                            let list_incomes = get_incomes(&conn, *x).unwrap();
+                            let list_expenses = get_expenses(&conn, *x).unwrap();
+                            list(&list_incomes, &list_expenses);
+                        },
+
+                        None => { list(&incomes, &expenses) }
+                    }
+                },
+                Commands::Logs => {
                     let logs = get_current_logs(&conn);
                     list_logs(&logs.expect("Error : cannot get logs !"));
-                }
-                "--logs-all" => {
+                },
+                Commands::LogsAll => {
                     let logs = get_all_logs(&conn);
                     list_logs(&logs.expect("Error : cannot get logs !"));
-                }
-                "--roll" => {
+                },
+                Commands::Period => {
+                    print!("{}", get_period(&conn, period).expect("Error : cannot find infos on the current period !"));
+                },
+                Commands::Remove { label } => {
+                    let expense = find_expense_by_label(&expenses, label.as_str())
+                                           .expect("Error : no expense found, unable to remove it.");
+                    remove_expense(&conn, &expense).expect("Error : unable to remove expense.");
+                },
+                Commands::Rename { old, new } => {
+                    let opt_expense = find_expense_by_label(&expenses, old.as_str());
+
+                    match opt_expense {
+                        Some(exp) => rename_expense(&conn, &exp, new).expect("Error : Unable to update an expense !"),
+                        None => panic!("Error : no expense line found"),
+                    }
+                },
+                Commands::Roll => {
                     end_period(&conn, period).expect("Error : cannot set an end date for the current period !");
                     create_period(&conn).expect("Error : cannot initialize a new period !");
                     copy_fixed_and_estimates(&conn).expect("Error : cannot initialize expenses for the new period !");
                 },
-                "--period" => print!("{}", get_period(&conn, period).expect("Error : cannot find infos on the current period !")),
-                _ => panic!("Unknown option !")
+                Commands::Spend { label, amount } => {
+                    match amount {
+                        Some(mtt) => {
+                            let spent = parse_into_cents(mtt);
+                            let opt_expense = find_expense_by_label(&expenses, &label);
+        
+                            match opt_expense {
+                                Some(exp) => increment_spending(&conn, &exp, spent).expect("Error : Unable to save the spending !"),
+                                None => create_expense(&conn, period, &label, ExpenseType::UNPLANNED, spent, spent).expect("Error : Unable to create a new expense !"),
+                            }
+                        },
+                        None => {
+                            let expense = find_expense_by_label(&expenses, &label).expect("Error : no expense found, unable to remove it.");
+                            spend_all(&conn, &expense).expect("Error : unable to spend all on expense.");
+                        }
+                    }
+                },
             }
         },
-        3 => {
-            let action = &args[1];
-
-            match action.as_str() {
-                "--list" => {
-                    let list_period: u32 = args[2].parse().expect("Error : unable to parse period id !");
-
-                    let period = get_period(&conn, list_period).expect("Unable to find period");
-                    
-                    println!("PERIOD {} : {} -> {}", 
-                        period.id, 
-                        period.start_date, 
-                        period.end_date.unwrap_or("Current".to_string()));
-
-                    let list_incomes = get_incomes(&conn, list_period).unwrap();
-                    let list_expenses = get_expenses(&conn, list_period).unwrap();
-                    list(&list_incomes, &list_expenses);
-                },
-                
-                "--remove" => {
-                    let label = &args[2];
-                    let expense = find_expense_by_label(&expenses, &label).expect("Error : no expense found, unable to remove it.");
-                    remove_expense(&conn, &expense).expect("Error : unable to remove expense.");
-                },
-                "--spend" => {
-                    let label = &args[2];
-                    let expense = find_expense_by_label(&expenses, &label).expect("Error : no expense found, unable to remove it.");
-                    spend_all(&conn, &expense).expect("Error : unable to spend all on expense.");
-                },
-                _ => {
-                    // ebenezer [spent] [expense_label]
-                    let spent = parse_into_cents(&args[1]);
-                    let label = &args[2];
-                    let opt_expense = find_expense_by_label(&expenses, &label);
-
-                    match opt_expense {
-                        Some(exp) => increment_spending(&conn, &exp, spent).expect("Error : Unable to save the spending !"),
-                        None => create_expense(&conn, period, &label, ExpenseType::UNPLANNED, spent, spent).expect("Error : Unable to create a new expense !"),
-                    }
-                }    
-            }            
-        },
-        4 => {
-            let action = &args[1];
-
-            match action.as_str() {
-                "--fixed" => {
-                    let value = &args[2];
-                    let label = &args[3];
-
-                    let opt_expense = find_expense_by_label(&expenses, &label);
-
-                    match opt_expense {
-                        Some(exp) => override_estimate(&conn, &exp, parse_into_cents(value)).expect("Error : Unable to update an expense !"),
-                        None => create_expense(&conn, period, &label, ExpenseType::FIXED, parse_into_cents(value), 0).expect("Error : Unable to create a new expense !"),
-                    }
-                },
-                "--estimate" => {
-                    let value = &args[2];
-                    let label = &args[3];
-
-                    let opt_expense = find_expense_by_label(&expenses, &label);
-
-                    match opt_expense {
-                        Some(exp) => override_estimate(&conn, &exp, parse_into_cents(value)).expect("Error : Unable to update an expense !"),
-                        None => create_expense(&conn, period, &label, ExpenseType::ESTIMATED, parse_into_cents(value), 0).expect("Error : Unable to create a new expense !"),
-                    }
-                },
-                "--income" => {
-                    let value = &args[2];
-                    let label = &args[3];
-                    create_income(&conn, period, &label,  parse_into_cents(value)).expect("Error : Unable to create a new income !")
-                },
-                "--rename" => {
-                    let oldlabel = &args[2];
-                    let newlabel = &args[3];
-
-                    let opt_expense = find_expense_by_label(&expenses, &oldlabel);
-
-                    match opt_expense {
-                        Some(exp) => rename_expense(&conn, &exp, newlabel).expect("Error : Unable to update an expense !"),
-                        None => panic!("Error : no expense line found"),
-                    }
-                }
-                _ => panic!("Unknown option !")
-            }
-        },
-        _ => panic!("Unknown option !")
+        None => {
+            show_balance(&incomes, &expenses)
+        }
     }
 }
 
@@ -627,22 +595,6 @@ fn override_spending(conn: &Connection, expense: &Expense, new_amount: i64) -> R
 // ------------------------------------------------------------
 // LOGS
 // ------------------------------------------------------------
-
-fn get_action_label(log: &Log) -> &str {
-    return match log.action.as_str() {
-        "START_PERIOD" => "Started a new period. (#%1)",
-        "END_PERIOD" => "Ended period #%1.",
-        "ADD_INCOME" => "Added income of %2 : %1.",
-        "ADD_EXPENSE" => "Added expense : %1 : estimated %2, spent %3.",
-        "UPDATE_ESTIMATE" => "Updated expense %1 : new estimate of %2.",
-        "RENAME_ESTIMATE" => "Renamed expense %1 : now labelled %2.",
-        "REMOVE_EXPENSE" => "Removed expense %1.",
-        "SPEND" => "Spent %2 on %1.",
-        "OVERRIDE_SPENDING" => "Set spending of %2 on %1.",
-        _ => ""
-    }
-}
-
 fn get_all_logs(conn: &Connection) -> Result<Vec<Log>> {
     let mut stmt = conn.prepare(
         "SELECT l.id, l.timer, l.action, l.arg1, l.arg2, l.arg3 FROM logs l ORDER BY l.id desc "
@@ -695,36 +647,3 @@ fn get_current_logs(conn: &Connection) -> Result<Vec<Log>> {
     return Ok(logs);
 }
 
-// ------------------------------------------------------------
-// UTILS
-// ------------------------------------------------------------
-/// Parse a string (hopefully numerical) into an amount in cents.
-fn parse_into_cents(value: &str) -> i64 {
-    let splitted: Vec<&str> = value.split(&['.', ','][..]).collect();
-
-    if splitted.len() > 2 {
-        panic!("Amounts shouldn't have more than one decimal separator. ({})", value);
-    }
-
-    let main:i64 = splitted[0].parse()
-        .expect("Input isn't a valid amount !");
-
-    let str_cents = splitted.get(1).or(Some(&"0"))
-        .expect("Default value 0 should always be present.");
-
-    if str_cents.len() > 2 {
-        panic!("More than two digits after decimal place. ({})", value)
-    }
-
-    let padded_cents = format!("{:0<2}", str_cents);
-
-    let cents: i64 = padded_cents.parse().expect("Input isn't a valid amount !");
-    return main * 100 + cents;
-}
-
-fn print_in_currency(amount: i64) -> String {
-    let currency = get_currency();
-    let cents = amount % 100;
-    let money = amount / 100;
-    return format!("{},{:02}{}", money, cents, currency);
-}
