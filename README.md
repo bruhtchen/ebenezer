@@ -21,6 +21,7 @@ Once you put in some incomes and expenses, you can get your current balance, you
 
 ## Commands
 
+<pre>
 Usage: ebenezer [COMMAND]
 
 Commands:
@@ -41,4 +42,4 @@ Commands:
 Options:
   -h, --help     Print help
   -V, --version  Print version
-
+</pre>
