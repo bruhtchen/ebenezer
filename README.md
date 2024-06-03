@@ -26,6 +26,7 @@ Usage: ebenezer [COMMAND]
 
 Commands:
   [empty]   Print the current balance
+  database  Show the current DB path 
   list      List incomes and expenses
   logs      List every transaction of the current period for auditing purposes
   logs-all  List every transaction for auditing purposes
