@@ -1,9 +1,11 @@
-use std::fmt;
+use std::io::Error;
+use std::{fmt, fs};
 use config::Config;
 use rusqlite::{Connection, Result};
 use clap::{Parser, Subcommand};
 use crate::structs::{Log, Period, Income, Expense, ExpenseType};
 use crate::utils::{parse_into_cents, print_in_currency};
+use homedir::get_my_home;
 
 pub mod structs;
 pub mod utils;
@@ -35,6 +37,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Show the current DB path
+    Database,
+
     /// List incomes and expenses
     List { id: Option<u32> },
 
@@ -72,11 +77,33 @@ enum Commands {
 // ------------------------------------------------------------
 // CORE
 // ------------------------------------------------------------
+fn prepare_database_dir() -> Result<(), Error> {
+    let path = get_my_home().unwrap().unwrap().as_path()
+    .join("ebenezer".to_string());
+
+    if !path.exists() || !path.is_dir() {
+        return fs::create_dir(path);
+    }
+
+    else {
+        return Ok(());
+    }
+}
+
 /// Returns the path to the SQLite DB file, either from the configuration or a reasonable default.
 fn get_dbfile() -> String {
+    prepare_database_dir().expect("Unable to create database directory");
+
     return match CONFIG.get::<String>("dbfile") {
         Ok(r) => r,
-        _ => "./ebenezer.db3".to_string()
+        _ => {
+           return get_my_home().unwrap().unwrap().as_path()
+            .join("ebenezer".to_string())
+            .join("ebenezer.db3".to_string())
+            .to_str()
+            .unwrap_or("./ebenezer.db3")
+            .to_string();
+        }
     }
 }
 
@@ -104,6 +131,9 @@ fn main() {
     match &cli.command {
         Some(cmd) => {
             match cmd {
+                Commands::Database => {
+                    println!("{}", get_dbfile())
+                },
                 Commands::Estimate { label, amount } => {
                     let estimate = parse_into_cents(amount);
                     let opt_expense = find_expense_by_label(&expenses, &label);
