@@ -16,7 +16,6 @@ extern crate lazy_static;
 // ------------------------------------------------------------
 lazy_static!{
     pub static ref CONFIG: Config = Config::builder()
-        .add_source(config::File::with_name("Settings.toml"))
         .add_source(config::Environment::with_prefix("EBENEZER").separator("_"))
         .build()
         .unwrap();
